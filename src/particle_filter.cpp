@@ -32,10 +32,12 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	double std_x = std[0];
 	double std_y = std[1];
 	double std_theta = std[2];
-	double unnorm_weight = 1.0;
 
 	// Set the number of particles
 	num_particles = 10;
+
+	// Resize particles and weights based on number of particles
+	weights.resize(num_particles);
 
 	// Create normal (Gaussian) distribution for p_x, p_y, and p_theta
 	normal_distribution<double> dist_x(x, std_x);
@@ -43,17 +45,16 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	normal_distribution<double> dist_theta(theta, std_theta);
 
 	// Create initial particles
-	for(int i = 0; i < num_particles; ++i){
+	for(int i = 0; i < num_particles; i++){
 		// Insert the random initialization into a particle
 		Particle particle;
 		particle.id = i;
 		particle.x = dist_x(gen);
 		particle.y = dist_y(gen);;
 		particle.theta = dist_theta(gen);
-		particle.weight = unnorm_weight;
+		particle.weight = 1.0;
 
 		particles.push_back(particle);
-		weights.push_back(particle.weight);
 	}
 
 	// Set flag about initialization as true
@@ -66,7 +67,6 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 	// NOTE: When adding noise you may find std::normal_distribution and std::default_random_engine useful.
 	//  http://en.cppreference.com/w/cpp/numeric/random/normal_distribution
 	//  http://www.cplusplus.com/reference/random/default_random_engine/
-		
 	// Set default random engine
 	default_random_engine gen;
 
@@ -74,23 +74,23 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 	double std_x = std_pos[0];
 	double std_y = std_pos[1];
 	double std_theta = std_pos[2];
-	double zero_float = 0.0;
 
 	// Create normal (Gaussian) distribution noise
-	normal_distribution<double> dist_noise_x(zero_float, std_x);
-	normal_distribution<double> dist_noise_y(zero_float, std_y);
-	normal_distribution<double> dist_noise_theta(zero_float, std_theta);
+	normal_distribution<double> dist_noise_x(0.0, std_x);
+	normal_distribution<double> dist_noise_y(0.0, std_y);
+	normal_distribution<double> dist_noise_theta(0.0, std_theta);
 	
-	// Set minimum threshold for yaw_rate
-	if(fabs(yaw_rate) < 0.0001){
-		yaw_rate = 0.0001;
-	}
-
 	// Calculate prediction for each particle
-	for(Particle &particle : particles){
-		particle.x += (velocity / yaw_rate) * (sin(particle.theta + yaw_rate * delta_t) - sin(particle.theta)) + dist_noise_x(gen);
-		particle.y += (velocity / yaw_rate) * (cos(particle.theta) - cos(particle.theta + yaw_rate * delta_t)) + dist_noise_y(gen);
-		particle.theta += yaw_rate * delta_t + dist_noise_theta(gen);
+	for(unsigned int i = 0; i < num_particles; i++){
+		if(fabs(yaw_rate) < 0.0001){
+			particles[i].x += velocity * delta_t * cos(particles[i].theta) + dist_noise_x(gen);
+			particles[i].y += velocity * delta_t * sin(particles[i].theta) + dist_noise_y(gen);
+			particles[i].theta += dist_noise_theta(gen);
+		} else {
+			particles[i].x += (velocity / yaw_rate) * (sin(particles[i].theta + yaw_rate * delta_t) - sin(particles[i].theta)) + dist_noise_x(gen);
+			particles[i].y += (velocity / yaw_rate) * (cos(particles[i].theta) - cos(particles[i].theta + yaw_rate * delta_t)) + dist_noise_y(gen);
+			particles[i].theta += yaw_rate * delta_t + dist_noise_theta(gen);
+		}
 	}
 }
 
@@ -99,18 +99,6 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
 	//   observed measurement to this particular landmark.
 	// NOTE: this method will NOT be called by the grading code. But you will probably find it useful to 
 	//   implement this method and use it as a helper during the updateWeights phase.
-
-	for(auto &observation : observations){
-		double nearest_distance = numeric_limits<double>::max();
-
-		for(auto &prediction : predicted){
-			double distance = dist(observation.x, observation.y, prediction.x, prediction.y);
-			if(distance < nearest_distance){
-				observation.id = prediction.id;
-				nearest_distance = distance;
-			}
-		}
-	}
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
@@ -127,73 +115,65 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   http://planning.cs.uiuc.edu/node99.html
 
 	// Initialize required variables for common purpose
-	double weight_sum = 0.0;
-	
-	double unnorm_weight = 1.0;
-	double std_x = std_landmark[0];
-	double std_y = std_landmark[1];
+	double variance_x = pow(std_landmark[0], 2);
+	double variance_y = pow(std_landmark[1], 2);
+	double covariance_xy = std_landmark[0] * std_landmark[1];
+	double weights_sum = 0;	
 
 	// Update weight of all particles
-	for(auto &particle : particles){
+	for(int i = 0; i < num_particles; i++) {
 		// Find all map landmarks that still within range of sensor range
-		vector<LandmarkObs> ident_landmarks;
-
-		for(auto &landmark : map_landmarks.landmark_list){
-			double distance_to_landmark = dist(landmark.x_f, landmark.y_f, particle.x, particle.y);
-			if(distance_to_landmark < sensor_range){
-				ident_landmarks.push_back(LandmarkObs({landmark.id_i, landmark.x_f, landmark.y_f}));
-			}
-		}
-
-		// Transform all observations
-		vector<LandmarkObs> transformed_observation;
-		int index = 0;
-		for(auto &observation : observations){
-			// Transform by using Homogeneous Transformation
-			double trans_x = particle.x + cos(particle.theta) * observation.x - sin(particle.theta) * observation.y;
-			double trans_y = particle.y + sin(particle.theta) * observation.x + cos(particle.theta) * observation.y;
-			transformed_observation[index++] = LandmarkObs({observation.id, trans_x, trans_y});
-		}
-
-		// Identify the correlation between the observation that was identified in sensor range within all transformed observations
-		dataAssociation(ident_landmarks, transformed_observation);
+		Particle& particle = particles[i];
 
 		// Calculate the weight prediction for each particle
-		double weight_prediction = 1.0;
+		long double final_weight = 1;
+		
+		for(int j = 0; j < observations.size(); j++) {
+			LandmarkObs observation = observations[j];
+			
+			// Transform by using Homogeneous Transformation
+			double trans_x = observation.x * cos(particle.theta) - observation.y * sin(particle.theta) + particle.x;
+			double trans_y = observation.x * sin(particle.theta) + observation.y * cos(particle.theta) + particle.y;
 
-		for(auto &observation : transformed_observation){
+			Map::single_landmark_s nearest_landmark;
+			double minimum_distance = sensor_range;
+			double current_distance = 0;
+ 
+			for(int k = 0; k < map_landmarks.landmark_list.size(); k++) {
 
-			LandmarkObs predicted_observation;
+				Map::single_landmark_s current_landmark = map_landmarks.landmark_list[k];
 
-			// Identify the coordinate of identified observation
-			for(auto &landmark : ident_landmarks){
-				if(observation.id == landmark.id){
-					predicted_observation = observation;
-					break;
+				// Calculate the distance between current landmark and transformed observations
+				current_distance = fabs(trans_x - current_landmark.x_f) + fabs(trans_y - current_landmark.y_f);
+
+				// If the current distance is nearer than the minimum distance, update it as the new minimum distance and nearest landmark
+				if (current_distance < minimum_distance) {
+					minimum_distance = current_distance;
+					nearest_landmark = current_landmark;
 				}
+
+
 			}
 
 			// Calculate the mean of Multivariate-Gaussian probability density
-			double normalizer = 2 * M_PI * std_x * std_y;
-			double probability = exp(-(pow(observation.x - predicted_observation.x, 2) / (2 * std_x * std_x) + pow(observation.y - predicted_observation.y, 2) / (2 * std_x * std_y)));
-			double final_weight = probability / normalizer;
-			
-			weight_prediction *= final_weight;
+			double x_difference = trans_x - nearest_landmark.x_f;
+			double y_difference = trans_y - nearest_landmark.y_f;
+			double probability = exp(-0.5 * ((x_difference * x_difference) / variance_x + (y_difference * y_difference) / variance_y));
+			double normalizer = 2 * M_PI * covariance_xy;
+
+			final_weight *= probability/normalizer;
+
 		}
 
-		particle.weight = weight_prediction;
-	}
+		// Update particle weight
+		particle.weight = final_weight;
+		
+		// Update weight vector
+		weights[i] = final_weight;
+		
+		// Add weight for normalization purpose
+		weights_sum += final_weight;
 
-	// Normalize the particles' weight
-	double normalizer = 0.0;
-	// Calculate the sum of all weights
-	for(auto &particle : particles){
-		normalizer += particle.weight;
-	}
-
-	// Conduct normalization
-	for(auto &particle : particles){
-		particle.weight /= normalizer;
 	}
 }
 
@@ -211,8 +191,8 @@ void ParticleFilter::resample() {
 	vector<Particle> newParticles;
 
 	// Conduct resampling
-	for(auto &newParticle : newParticles){
-		newParticle = particles[probability_distribution(gen)];
+	for(unsigned int i = 0; i < num_particles; i++){
+		newParticles.push_back(particles[probability_distribution(gen)]);
 	}
 
 	// Set resampling result
